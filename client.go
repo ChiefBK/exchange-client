@@ -1,4 +1,4 @@
-package exchange_client
+package tracr_client
 
 import (
 	"crypto/hmac"
@@ -13,7 +13,6 @@ import (
 	"encoding/hex"
 	"crypto/sha256"
 	"encoding/base64"
-	"log"
 )
 
 const (
@@ -99,8 +98,6 @@ func (self *Client) makeRequest(method, requestUrlPath string, urlQueryArgs, bod
 	nonce := fmt.Sprintf("%d", time.Now().UnixNano()) // nonce equal to current unix timestamp
 	bodyData.Add("nonce", nonce)                      // add to body
 	requestBody := bodyData.Encode()                  // create string of body key-value data
-
-	log.Printf("request body: %s\n", requestBody)
 
 	var secret []byte
 
