@@ -13,17 +13,22 @@ import (
 	"encoding/hex"
 	"crypto/sha256"
 	"encoding/base64"
+	log "github.com/inconshreveable/log15"
 )
 
 const (
 	DEFAULT_HTTPCLIENT_TIMEOUT = 30
 )
 
-func NewClient(apiKey, apiSecret, exchange, postBaseUrl, getBaseUrl string, throttle time.Duration) *Client {
-	return &Client{apiKey, apiSecret, exchange, postBaseUrl, getBaseUrl, &http.Client{}, time.Tick(throttle)}
+func NewApiClient(apiKey, apiSecret, exchange, postBaseUrl, getBaseUrl string, throttle time.Duration) *ApiClient {
+	return &ApiClient{apiKey, apiSecret, exchange, postBaseUrl, getBaseUrl, &http.Client{}, time.Tick(throttle)}
 }
 
-type Client struct {
+type BaseApiClient interface {
+	Do(method, requestUrlPath string, urlArgs, bodyArgs, headerArgs map[string]string) (response []byte, err error)
+}
+
+type ApiClient struct {
 	apiKey      string
 	apiSecret   string
 	exchange    string
@@ -33,7 +38,7 @@ type Client struct {
 	throttle    <-chan time.Time
 }
 
-func (self *Client) doTimeoutRequest(req *http.Request) (*http.Response, error) {
+func (self *ApiClient) doTimeoutRequest(req *http.Request) (*http.Response, error) {
 	timeout := time.NewTimer(DEFAULT_HTTPCLIENT_TIMEOUT * time.Second)
 
 	// Do the request in the background so we can check the timeout
@@ -55,7 +60,7 @@ func (self *Client) doTimeoutRequest(req *http.Request) (*http.Response, error) 
 	}
 }
 
-func (self *Client) makeRequest(method, requestUrlPath string, urlQueryArgs, bodyArgs, headerArgs map[string]string, respCh chan<- []byte, errCh chan<- error) {
+func (self *ApiClient) makeRequest(method, requestUrlPath string, urlQueryArgs, bodyArgs, headerArgs map[string]string, respCh chan<- []byte, errCh chan<- error) {
 	var req *http.Request
 	body := []byte{}
 
@@ -100,16 +105,20 @@ func (self *Client) makeRequest(method, requestUrlPath string, urlQueryArgs, bod
 	requestBody := bodyData.Encode()                  // create string of body key-value data
 
 	var secret []byte
+	var err error
 
 	// create secret byte array based on exchange
 	switch self.exchange {
 	case "kraken":
-		secret, _ = base64.StdEncoding.DecodeString(self.apiSecret)
+		secret, err = base64.StdEncoding.DecodeString(self.apiSecret)
+		if err != nil {
+			log.Error("There was an error decoding secret to base64", "module", "apiClient")
+		}
 	case "poloniex":
 		secret = []byte(self.apiSecret)
 	}
 
-	mac := hmac.New(sha512.New, secret) // create hmac signed by secret
+	mac := hmac.New(sha512.New, secret) // create hmac signed by secret using sha512 hash
 
 	var apiKeyKey string
 	var apiSignKey string
@@ -124,13 +133,17 @@ func (self *Client) makeRequest(method, requestUrlPath string, urlQueryArgs, bod
 	case "kraken":
 		apiKeyKey = "API-Key"
 		apiSignKey = "API-Sign"
-		h := sha256.New()
-		h.Write([]byte(nonce + requestBody))
-		mac.Write(append([]byte(requestUrlPath), h.Sum(nil)...))
+		sha := sha256.New()
+		sha.Write([]byte(nonce + requestBody))
+		mac.Write(append([]byte(requestUrlPath), sha.Sum(nil)...))
 		sign = base64.StdEncoding.EncodeToString(mac.Sum(nil))
 	}
 
-	req, _ = http.NewRequest(method, reqUrl, strings.NewReader(requestBody))
+	req, err = http.NewRequest(method, reqUrl, strings.NewReader(requestBody))
+
+	if err != nil {
+		log.Error("There was an error creating a new request", "module", "apiClient")
+	}
 
 	req.Header.Add(apiKeyKey, self.apiKey)
 	req.Header.Add(apiSignKey, sign)
@@ -170,7 +183,7 @@ func (self *Client) makeRequest(method, requestUrlPath string, urlQueryArgs, bod
 }
 
 // do prepare and process HTTP request to Poloniex API
-func (self *Client) Do(method, requestUrlPath string, urlArgs, bodyArgs, headerArgs map[string]string) (response []byte, err error) {
+func (self *ApiClient) Do(method, requestUrlPath string, urlArgs, bodyArgs, headerArgs map[string]string) (response []byte, err error) {
 	respCh := make(chan []byte)
 	errCh := make(chan error)
 	<-self.throttle
